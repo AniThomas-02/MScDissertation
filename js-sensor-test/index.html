@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JS Sensor Test</title>
+</head>
+<body>
+
+<h2>JavaScript Sensor Test</h2>
+
+<button onclick="start()">Start</button>
+<button onclick="stop()">Stop</button>
+
+<pre id="out"></pre>
+
+<script>
+let running = false;
+let motionCount = 0;
+let orientCount = 0;
+let startTime;
+
+function log(msg) {
+  document.getElementById("out").textContent = JSON.stringify(msg, null, 2);
+  console.log(msg);
+}
+
+function start() {
+  running = true;
+  motionCount = 0;
+  orientCount = 0;
+  startTime = Date.now();
+
+  log({
+    secureContext: window.isSecureContext,
+    userAgent: navigator.userAgent,
+    hasDeviceMotion: typeof DeviceMotionEvent !== "undefined",
+    hasDeviceOrientation: typeof DeviceOrientationEvent !== "undefined",
+    hasGeolocation: !!navigator.geolocation
+  });
+
+  window.addEventListener("devicemotion", motionHandler);
+  window.addEventListener("deviceorientation", orientationHandler);
+}
+
+function stop() {
+  running = false;
+  window.removeEventListener("devicemotion", motionHandler);
+  window.removeEventListener("deviceorientation", orientationHandler);
+
+  const duration = (Date.now() - startTime) / 1000;
+
+  log({
+    motionEventsPerSecond: motionCount / duration,
+    orientationEventsPerSecond: orientCount / duration
+  });
+}
+
+function motionHandler(e) {
+  if (!running) return;
+  motionCount++;
+}
+
+function orientationHandler(e) {
+  if (!running) return;
+  orientCount++;
+}
+</script>
+
+</body>
+</html>
