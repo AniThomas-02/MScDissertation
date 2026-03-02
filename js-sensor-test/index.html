@@ -19,6 +19,10 @@ let motionCount = 0;
 let orientCount = 0;
 let startTime;
 
+let lastUI = 0;
+let latestMotion = null;
+let latestOrient = null;
+
 function log(msg) {
   document.getElementById("out").textContent = JSON.stringify(msg, null, 2);
   console.log(msg);
@@ -55,14 +59,52 @@ function stop() {
   });
 }
 
+function updateUI() {
+  const now = Date.now();
+  if (now - lastUI < 250) return; // update 4 times per second
+  lastUI = now;
+
+  document.getElementById("out").textContent = JSON.stringify({
+    secureContext: window.isSecureContext,
+    userAgent: navigator.userAgent,
+    hasDeviceMotion: typeof DeviceMotionEvent !== "undefined",
+    hasDeviceOrientation: typeof DeviceOrientationEvent !== "undefined",
+    hasGeolocation: !!navigator.geolocation,
+    motionCount,
+    orientCount,
+    latestMotion,
+    latestOrient
+  }, null, 2);
+}
+
 function motionHandler(e) {
   if (!running) return;
   motionCount++;
+
+  latestMotion = {
+    t: Date.now(),
+    acc: e.acceleration,
+    accG: e.accelerationIncludingGravity,
+    rot: e.rotationRate,
+    interval_ms: e.interval
+  };
+
+  updateUI();
 }
 
 function orientationHandler(e) {
   if (!running) return;
   orientCount++;
+
+  latestOrient = {
+    t: Date.now(),
+    alpha: e.alpha,
+    beta: e.beta,
+    gamma: e.gamma,
+    absolute: e.absolute
+  };
+
+  updateUI();
 }
 </script>
 
