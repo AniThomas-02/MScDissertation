@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">All Sensor Collector</string>
+
+    <string name="action_reload">Reload</string>
+    <string name="action_clear_logs">Clear logs</string>
+    <string name="action_share_logs">Share logs</string>
+
+    <string name="status_default">Logs saved locally</string>
+    <string name="status_cleared">Logs cleared</string>
+
+    <string name="collector_url" translatable="false">file:///android_asset/collector.html</string>
+</resources>

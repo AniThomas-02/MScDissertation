@@ -1,0 +1,383 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Permissions-Policy" content="accelerometer=*, gyroscope=*, magnetometer=*, ambient-light-sensor=*, camera=(), microphone=(), geolocation=()" />
+  <title>All Sensor WebView Collector</title>
+  <style>
+    body { font-family: sans-serif; margin: 18px; line-height: 1.35; }
+    button, input, select { font-size: 18px; padding: 10px; margin: 5px 0; }
+    #target { font-size: 72px; font-weight: bold; text-align: center; margin: 15px; }
+    #typingBox { width: 100%; box-sizing: border-box; font-size: 28px; text-align: center; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .small { font-size: 13px; color: #444; white-space: pre-wrap; }
+    .ok { color: #0a7a0a; }
+    .bad { color: #a00000; }
+  </style>
+</head>
+<body>
+  <h2>All Sensor WebView Collector</h2>
+
+  <div class="row">
+    <button id="startBtn">Start sensors</button>
+    <button id="stopBtn">Stop sensors</button>
+    <button id="newSessionBtn">New typing session</button>
+  </div>
+
+  <label>Prompts per key:</label>
+  <select id="repeats">
+    <option value="20">20</option>
+    <option value="50">50</option>
+    <option value="100">100</option>
+  </select>
+
+  <div id="target">-</div>
+  <input id="typingBox" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" inputmode="text" placeholder="Tap here and type prompt" />
+
+  <p id="progress">Press “Start sensors”, then “New typing session”.</p>
+  <p id="rates" class="small"></p>
+  <p id="availability" class="small"></p>
+
+<script>
+const KEYBOARD_KEYS = "abcdefghijklmnopqrstuvwxyz".split("");
+
+let sensorBuffer = [];
+let keyBuffer = [];
+let eventBuffer = [];
+let activeSensors = [];
+let sessionId = makeId();
+let trialId = 0;
+let prompts = [];
+let promptIndex = 0;
+let attempt = 1;
+let currentTarget = null;
+let sensorCounts = {};
+let lastRateUpdate = performance.now();
+let started = false;
+
+const targetEl = document.getElementById("target");
+const typingBox = document.getElementById("typingBox");
+const progressEl = document.getElementById("progress");
+const ratesEl = document.getElementById("rates");
+const availabilityEl = document.getElementById("availability");
+
+function makeId() {
+  return Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
+}
+
+function baseRow(kind) {
+  return {
+    kind,
+    session_id: sessionId,
+    perf_time: performance.now(),
+    wall_time: Date.now(),
+    user_agent: navigator.userAgent,
+    secure_context: window.isSecureContext,
+    url: location.href
+  };
+}
+
+function toLine(obj) {
+  return JSON.stringify(obj) + "\n";
+}
+
+function logSensor(type, data) {
+  sensorCounts[type] = (sensorCounts[type] || 0) + 1;
+  sensorBuffer.push(toLine({ ...baseRow("sensor"), type, ...data }));
+}
+
+function logKey(data) {
+  keyBuffer.push(toLine({ ...baseRow("key"), ...data }));
+}
+
+function logEvent(type, data = {}) {
+  eventBuffer.push(toLine({ ...baseRow("event"), type, ...data }));
+}
+
+function flushBuffers() {
+  try {
+    if (window.AndroidLogger) {
+      if (sensorBuffer.length) {
+        AndroidLogger.appendSensorLines(sensorBuffer.join(""));
+        sensorBuffer = [];
+      }
+      if (keyBuffer.length) {
+        AndroidLogger.appendKeyLines(keyBuffer.join(""));
+        keyBuffer = [];
+      }
+      if (eventBuffer.length) {
+        AndroidLogger.appendEventLines(eventBuffer.join(""));
+        eventBuffer = [];
+      }
+    }
+  } catch (e) {
+    console.log("Flush failed", e);
+  }
+}
+setInterval(flushBuffers, 250);
+window.addEventListener("beforeunload", flushBuffers);
+
+// Called from Android before deleting the log files to prevent data being written multiple times
+function clearBuffers() {
+  sensorBuffer = [];
+  keyBuffer = [];
+  eventBuffer = [];
+}
+window.clearBuffers = clearBuffers;
+
+function n(v) {
+  return Number.isFinite(v) ? v : null;
+}
+
+function safeArray(v) {
+  if (!v) return null;
+  try { return Array.from(v).map(n); } catch (e) { return null; }
+}
+
+let devicemotionHandler = null;
+let deviceorientationHandler = null;
+
+function addLegacySensors() {
+  devicemotionHandler = (e) => {
+    logSensor("devicemotion", {
+      acc_x: n(e.acceleration?.x),
+      acc_y: n(e.acceleration?.y),
+      acc_z: n(e.acceleration?.z),
+      gacc_x: n(e.accelerationIncludingGravity?.x),
+      gacc_y: n(e.accelerationIncludingGravity?.y),
+      gacc_z: n(e.accelerationIncludingGravity?.z),
+      rot_alpha: n(e.rotationRate?.alpha),
+      rot_beta: n(e.rotationRate?.beta),
+      rot_gamma: n(e.rotationRate?.gamma),
+      interval: n(e.interval)
+    });
+  };
+
+  deviceorientationHandler = (e) => {
+    logSensor("deviceorientation", {
+      ori_alpha: n(e.alpha),
+      ori_beta: n(e.beta),
+      ori_gamma: n(e.gamma),
+      ori_absolute: e.absolute === undefined ? null : !!e.absolute
+    });
+  };
+
+  window.addEventListener("devicemotion", devicemotionHandler);
+  window.addEventListener("deviceorientation", deviceorientationHandler);
+
+  logEvent("legacy_listeners_added", {
+    has_ondevicemotion: "ondevicemotion" in window,
+    has_ondeviceorientation: "ondeviceorientation" in window
+  });
+}
+
+function removeLegacySensors() {
+  if (devicemotionHandler) {
+    window.removeEventListener("devicemotion", devicemotionHandler);
+    devicemotionHandler = null;
+  }
+  if (deviceorientationHandler) {
+    window.removeEventListener("deviceorientation", deviceorientationHandler);
+    deviceorientationHandler = null;
+  }
+  logEvent("legacy_listeners_removed");
+}
+
+function sensorAvailable(name) {
+  return typeof window[name] !== "undefined";
+}
+
+function startGenericSensor(name, fields, options = { frequency: 100 }) {
+  if (!sensorAvailable(name)) {
+    logEvent("sensor_unavailable", { sensor: name });
+    return;
+  }
+
+  try {
+    const SensorClass = window[name];
+    const sensor = new SensorClass(options);
+
+    sensor.addEventListener("reading", () => {
+      const data = {};
+      for (const field of fields) {
+        const value = sensor[field];
+        if (field === "quaternion") {
+          data[`${name}_q0`] = safeArray(value)?.[0] ?? null;
+          data[`${name}_q1`] = safeArray(value)?.[1] ?? null;
+          data[`${name}_q2`] = safeArray(value)?.[2] ?? null;
+          data[`${name}_q3`] = safeArray(value)?.[3] ?? null;
+        } else {
+          data[`${name}_${field}`] = n(value);
+        }
+      }
+      data[`${name}_timestamp`] = n(sensor.timestamp);
+      logSensor(name, data);
+    });
+
+    sensor.addEventListener("error", (event) => {
+      logEvent("sensor_error", {
+        sensor: name,
+        error_name: event.error?.name ?? null,
+        error_message: event.error?.message ?? null
+      });
+    });
+
+    sensor.start();
+    activeSensors.push(sensor);
+    logEvent("sensor_started", { sensor: name, options });
+  } catch (err) {
+    logEvent("sensor_start_failed", {
+      sensor: name,
+      error_name: err?.name ?? null,
+      error_message: err?.message ?? String(err)
+    });
+  }
+}
+
+function startAllSensors() {
+  if (started) return;
+  started = true;
+  sensorCounts = {};
+
+  logEvent("collector_start", {
+    available_generic_sensors: {
+      Accelerometer: sensorAvailable("Accelerometer"),
+      LinearAccelerationSensor: sensorAvailable("LinearAccelerationSensor"),
+      GravitySensor: sensorAvailable("GravitySensor"),
+      Gyroscope: sensorAvailable("Gyroscope"),
+      Magnetometer: sensorAvailable("Magnetometer"),
+      AmbientLightSensor: sensorAvailable("AmbientLightSensor"),
+      AbsoluteOrientationSensor: sensorAvailable("AbsoluteOrientationSensor"),
+      RelativeOrientationSensor: sensorAvailable("RelativeOrientationSensor")
+    }
+  });
+
+  addLegacySensors();
+
+  startGenericSensor("Accelerometer", ["x", "y", "z"]);
+  startGenericSensor("LinearAccelerationSensor", ["x", "y", "z"]);
+  startGenericSensor("GravitySensor", ["x", "y", "z"]);
+  startGenericSensor("Gyroscope", ["x", "y", "z"]);
+  startGenericSensor("Magnetometer", ["x", "y", "z"]);
+  startGenericSensor("AmbientLightSensor", ["illuminance"]);
+  startGenericSensor("AbsoluteOrientationSensor", ["quaternion"]);
+  startGenericSensor("RelativeOrientationSensor", ["quaternion"]);
+
+  updateAvailabilityText();
+}
+
+function stopAllSensors() {
+  for (const s of activeSensors) {
+    try { s.stop(); } catch (e) {}
+  }
+  activeSensors = [];
+  removeLegacySensors();
+  logEvent("collector_stop");
+  flushBuffers();
+  started = false;
+}
+
+function updateAvailabilityText() {
+  const names = [
+    "Accelerometer", "LinearAccelerationSensor", "GravitySensor", "Gyroscope",
+    "Magnetometer", "AmbientLightSensor", "AbsoluteOrientationSensor", "RelativeOrientationSensor"
+  ];
+}
+
+function updateRates() {
+  const now = performance.now();
+  const elapsed = (now - lastRateUpdate) / 1000;
+  lastRateUpdate = now;
+  const lines = Object.entries(sensorCounts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([type, count]) => `${type}: ${count} rows total`);
+  ratesEl.textContent = lines.length ? lines.join("\n") : "No sensor rows yet.";
+}
+setInterval(updateRates, 1000);
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function newTypingSession() {
+  sessionId = makeId();
+  trialId = 0;
+  promptIndex = 0;
+  const repeats = parseInt(document.getElementById("repeats").value, 10);
+  prompts = [];
+  for (let r = 0; r < repeats; r++) prompts.push(...KEYBOARD_KEYS);
+  shuffle(prompts);
+  logEvent("typing_session_start", { repeats_per_key: repeats, total_prompts: prompts.length });
+  nextPrompt();
+  typingBox.focus();
+}
+
+function nextPrompt() {
+  if (promptIndex >= prompts.length) {
+    currentTarget = null;
+    targetEl.textContent = "Done";
+    progressEl.textContent = `Complete: ${promptIndex}/${prompts.length}`;
+    logEvent("typing_session_complete", { total_trials: trialId });
+    flushBuffers();
+    return;
+  }
+  currentTarget = prompts[promptIndex];
+  targetEl.textContent = currentTarget.toUpperCase();
+  progressEl.textContent = `Prompt ${promptIndex + 1}/${prompts.length}`;
+  typingBox.value = "";
+  attempt = 1;
+  trialId += 1;
+  logEvent("prompt_shown", { trial_id: trialId, target_key: currentTarget, prompt_index: promptIndex });
+}
+
+typingBox.addEventListener("keydown", (e) => {
+  logEvent("keydown", { trial_id: trialId, prompt_index: promptIndex, target_key: currentTarget, attempt, key: e.key });
+});
+
+typingBox.addEventListener("keyup", (e) => {
+  logEvent("keyup", { trial_id: trialId, prompt_index: promptIndex, target_key: currentTarget, attempt, key: e.key });
+});
+
+typingBox.addEventListener("input", (e) => {
+  const value = typingBox.value.toLowerCase();
+  if (!value) return;
+  const actual = value[value.length - 1];
+  const correct = actual === currentTarget;
+  logKey({
+    trial_id: trialId,
+    prompt_index: promptIndex,
+    target_key: currentTarget,
+    actual_key: actual,
+    correct,
+    attempt
+  });
+
+  typingBox.value = "";
+
+  if (correct) {
+    promptIndex += 1;
+    setTimeout(nextPrompt, 80);
+  } else {
+    // keep displaying the same target and let the participant retry to keep a balanced dataset
+    attempt += 1;
+  }
+});
+
+document.getElementById("startBtn").addEventListener("click", startAllSensors);
+document.getElementById("stopBtn").addEventListener("click", stopAllSensors);
+document.getElementById("newSessionBtn").addEventListener("click", newTypingSession);
+
+updateAvailabilityText();
+logEvent("page_loaded", {
+  secure_context: window.isSecureContext,
+  user_agent: navigator.userAgent,
+  href: location.href
+});
+</script>
+</body>
+</html>
