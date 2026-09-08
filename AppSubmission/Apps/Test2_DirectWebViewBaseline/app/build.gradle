@@ -1,0 +1,7 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.example.sensor.directwebview'
+    compileSdk 36
+    defaultConfig { applicationId 'com.example.sensor.directwebview'; minSdk 26; targetSdk 36; versionCode 1; versionName '1.0' }
+}
